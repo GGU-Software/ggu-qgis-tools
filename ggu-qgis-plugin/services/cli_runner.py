@@ -11,6 +11,7 @@ All business logic remains in the CLI - this service only handles:
 """
 
 import csv
+import json
 import os
 import subprocess
 import tempfile
@@ -123,10 +124,8 @@ class CliRunner:
     ) -> Tuple[bool, str]:
         """Create new drillings (boreholes or soundings) from points.
 
-        Uses the CLI command:
-        ggu-connect import coordinates --input <csv_file>
-            --project <project_id> --db-profile <profile>
-            --col-name 0 --col-x 1 --col-y 2 [--col-z 3] --start-row 2
+        Tries the new JSON-based 'create' command first, falls back to
+        'import coordinates' if not available.
 
         Args:
             points: List of dicts with keys: name, x, y, crs, z (optional)
@@ -143,6 +142,105 @@ class CliRunner:
         if not project_id:
             return False, "Project ID is required"
 
+        # Try the new JSON-based create command first
+        success, message = self._create_drillings_json(points, drilling_type, project_id, db_profile)
+
+        if success:
+            return success, message
+
+        # If 'create' command not available, fall back to 'import coordinates'
+        if "Unknown command: create" in message or "unknown command" in message.lower():
+            return self._create_drillings_csv_fallback(points, drilling_type, project_id, db_profile)
+
+        return success, message
+
+    def _create_drillings_json(
+        self,
+        points: List[Dict],
+        drilling_type: str,
+        project_id: str,
+        db_profile: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        """Create drillings using JSON-based 'create' command.
+
+        Uses the CLI command:
+        ggu-connect create --input <json-file> --db-profile <profile>
+
+        Args:
+            points: List of dicts with keys: name, x, y, crs, z (optional)
+            drilling_type: Type of drilling ('borehole' or 'cpt')
+            project_id: Target project GUID
+            db_profile: Database profile name (optional)
+
+        Returns:
+            Tuple of (success: bool, message: str)
+        """
+        # Build JSON structure
+        crs = points[0].get("crs", "EPSG:25832") if points else "EPSG:25832"
+
+        json_data = {
+            "operation": "create_drillings",
+            "project_id": project_id,
+            "drillings": [
+                {
+                    "name": p.get("name", f"NEW-{i+1}"),
+                    "type": drilling_type,
+                    "x": p["x"],
+                    "y": p["y"],
+                    "z": p.get("z"),
+                    "crs": p.get("crs", crs),
+                }
+                for i, p in enumerate(points)
+            ]
+        }
+
+        # Remove None values from drillings
+        for drilling in json_data["drillings"]:
+            if drilling["z"] is None:
+                del drilling["z"]
+
+        # Create temp JSON file
+        json_path = self._create_json_file(json_data)
+        if not json_path:
+            return False, "Failed to create temporary JSON file"
+
+        try:
+            args = ["create", "--input", json_path]
+
+            if db_profile:
+                args.extend(["--db-profile", db_profile])
+
+            return self._run_command(args)
+
+        finally:
+            try:
+                os.remove(json_path)
+            except OSError:
+                pass
+
+    def _create_drillings_csv_fallback(
+        self,
+        points: List[Dict],
+        drilling_type: str,
+        project_id: str,
+        db_profile: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        """Fallback: Create drillings using CSV-based 'import coordinates'.
+
+        Uses the CLI command:
+        ggu-connect import coordinates --input <csv_file>
+            --project <project_id> --db-profile <profile>
+            --col-name 0 --col-x 1 --col-y 2 [--col-z 3] --start-row 2
+
+        Args:
+            points: List of dicts with keys: name, x, y, crs, z (optional)
+            drilling_type: Type of drilling ('borehole' or 'cpt') - NOTE: not supported in fallback
+            project_id: Target project GUID
+            db_profile: Database profile name (optional)
+
+        Returns:
+            Tuple of (success: bool, message: str)
+        """
         # Create CSV file with point data
         csv_path = self._create_csv_file(points)
         if not csv_path:
@@ -174,14 +272,12 @@ class CliRunner:
             if db_profile:
                 args.extend(["--db-profile", db_profile])
 
-            # TODO: Add drilling type parameter when CLI supports it
-            # Currently the CLI creates boreholes by default
-            # args.extend(["--type", drilling_type])
+            # Note: drilling_type is not supported in CSV fallback mode
+            # All drillings will be created as default type (borehole)
 
             return self._run_command(args)
 
         finally:
-            # Clean up temp file
             try:
                 os.remove(csv_path)
             except OSError:
@@ -222,6 +318,26 @@ class CliRunner:
                     writer.writerow(row)
 
             return csv_path
+
+        except Exception:
+            return None
+
+    def _create_json_file(self, data: Dict) -> Optional[str]:
+        """Create a temporary JSON file with data.
+
+        Args:
+            data: Dictionary to serialize as JSON
+
+        Returns:
+            Path to the created JSON file, or None on error
+        """
+        try:
+            fd, json_path = tempfile.mkstemp(suffix=".json", prefix="ggu_create_")
+
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+
+            return json_path
 
         except Exception:
             return None
