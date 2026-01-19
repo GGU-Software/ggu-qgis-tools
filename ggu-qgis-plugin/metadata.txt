@@ -1,0 +1,31 @@
+[general]
+name=GGU QGIS Tools
+qgisMinimumVersion=3.28
+description=Integration with GGU-CONNECT CLI for opening boreholes in GGU-STRATIG and creating boreholes from planning points
+version=0.1.0
+author=GGU Software
+email=info@ggu.de
+
+about=This plugin provides integration between QGIS and the GGU-CONNECT command-line interface.
+
+    Features:
+    - Open selected boreholes/soundings in GGU-STRATIG
+    - Create new boreholes in GGU-CONNECT from selected planning points
+
+    The plugin acts as a thin UI layer - all business logic remains in the GGU-CONNECT CLI.
+
+tracker=https://github.com/GGU-Software/ggu-qgis-tools/issues
+repository=https://github.com/GGU-Software/ggu-qgis-tools
+
+changelog=0.1.0 - Initial release
+    - Open boreholes in GGU-STRATIG
+    - Create boreholes from planning points
+    - Settings dialog for CLI path and database profile
+
+tags=geotechnical,borehole,ggu,connect,stratig
+
+homepage=https://github.com/GGU-Software/ggu-qgis-tools
+category=Sketcher
+icon=resources/icon.png
+experimental=True
+deprecated=False
