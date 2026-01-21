@@ -26,6 +26,6 @@ tags=geotechnical,borehole,ggu,connect,stratig
 
 homepage=https://github.com/GGU-Software/ggu-qgis-tools
 category=Sketcher
-icon=resources/icon.png
+icon=resources/icon.svg
 experimental=True
 deprecated=False

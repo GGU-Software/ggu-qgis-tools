@@ -14,6 +14,7 @@ from qgis.core import QgsProject
 from .services.selection_reader import SelectionReader
 from .services.cli_runner import CliRunner
 from .ui.settings_dialog import SettingsDialog
+from .ui.drilling_type_dialog import DrillingTypeDialog
 
 
 class GguQgisToolsPlugin:
@@ -82,28 +83,19 @@ class GguQgisToolsPlugin:
 
         # Action: Open in GGU-STRATIG
         self.add_action(
-            os.path.join(icon_base, "icon_open.png"),
+            os.path.join(icon_base, "icon_open.svg"),
             self.tr("Open in GGU-STRATIG"),
             self.open_in_stratig,
             status_tip=self.tr("Open selected boreholes in GGU-STRATIG"),
             parent=self.iface.mainWindow(),
         )
 
-        # Action: Create Borehole
+        # Action: Create Drilling (opens type selection dialog)
         self.add_action(
-            os.path.join(icon_base, "icon_create_borehole.png"),
-            self.tr("Create Borehole"),
-            self.create_borehole,
-            status_tip=self.tr("Create new borehole from selected point"),
-            parent=self.iface.mainWindow(),
-        )
-
-        # Action: Create Sounding (CPT)
-        self.add_action(
-            os.path.join(icon_base, "icon_create_sounding.png"),
-            self.tr("Create Sounding"),
-            self.create_sounding,
-            status_tip=self.tr("Create new sounding (CPT) from selected point"),
+            os.path.join(icon_base, "icon_create_borehole.svg"),
+            self.tr("Create Drilling"),
+            self.create_drilling,
+            status_tip=self.tr("Create new drilling (borehole, CPT, DPT) from selected points"),
             parent=self.iface.mainWindow(),
         )
 
@@ -113,7 +105,7 @@ class GguQgisToolsPlugin:
 
         # Action: Settings
         self.add_action(
-            os.path.join(icon_base, "icon_settings.png"),
+            os.path.join(icon_base, "icon_settings.svg"),
             self.tr("Settings"),
             self.show_settings,
             status_tip=self.tr("Configure GGU QGIS Tools"),
@@ -203,19 +195,10 @@ class GguQgisToolsPlugin:
                 self.tr(f"Failed to open in GGU-STRATIG:\n\n{message}"),
             )
 
-    def create_borehole(self):
-        """Create new borehole from selected planning points."""
-        self._create_drilling("borehole")
+    def create_drilling(self):
+        """Create new drilling from selected planning points.
 
-    def create_sounding(self):
-        """Create new sounding (CPT) from selected planning points."""
-        self._create_drilling("cpt")
-
-    def _create_drilling(self, drilling_type):
-        """Create new drilling (borehole or sounding) from selected points.
-
-        Args:
-            drilling_type: Type of drilling ('borehole' or 'cpt')
+        Shows a dialog to select drilling type, then creates the drilling(s).
         """
         if not self._check_cli_configured():
             return
@@ -242,11 +225,22 @@ class GguQgisToolsPlugin:
                 self.tr("Configuration Required"),
                 self.tr(
                     "Default project ID is not configured.\n\n"
-                    "Please set a default project in the settings for creating new boreholes."
+                    "Please set a default project in the settings for creating new drillings."
                 ),
             )
             self.show_settings()
             return
+
+        # Show drilling type selection dialog
+        dialog = DrillingTypeDialog(
+            point_count=len(selection["features"]),
+            parent=self.iface.mainWindow(),
+        )
+
+        if dialog.exec_() != dialog.Accepted:
+            return  # User cancelled
+
+        drilling_type = dialog.get_selected_type()
 
         # Prepare point data
         points = []
@@ -269,17 +263,25 @@ class GguQgisToolsPlugin:
             db_profile=db_profile,
         )
 
+        # Get display name for the drilling type
+        type_names = {
+            "borehole": self.tr("borehole(s)"),
+            "cpt": self.tr("cone penetration test(s)"),
+            "dpt": self.tr("dynamic probing test(s)"),
+        }
+        type_display = type_names.get(drilling_type, drilling_type)
+
         if success:
             QMessageBox.information(
                 self.iface.mainWindow(),
                 self.tr("Success"),
-                self.tr(f"Created {len(points)} {drilling_type}(s) successfully."),
+                self.tr(f"Created {len(points)} {type_display} successfully."),
             )
         else:
             QMessageBox.critical(
                 self.iface.mainWindow(),
                 self.tr("CLI Error"),
-                self.tr(f"Failed to create {drilling_type}(s):\n\n{message}"),
+                self.tr(f"Failed to create {type_display}:\n\n{message}"),
             )
 
     def show_settings(self):
