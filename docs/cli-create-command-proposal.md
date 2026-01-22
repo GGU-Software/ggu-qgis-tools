@@ -2,257 +2,137 @@
 
 ## Overview
 
-Add a new `create` subcommand to ggu-connect CLI that creates database entities from JSON input.
-This provides a flexible, extensible interface for creating boreholes, soundings, and other objects.
+Add a new `create` subcommand to ggu-connect CLI that creates database entities from XML input.
+This reuses the existing XML import infrastructure (`IConnectXMLImporter` → `TMergeHelper`).
 
 ## Command Syntax
 
 ```bash
-ggu-connect create --input <json-file> --db-profile <profile> [options]
-
-# Or with inline JSON (for simple cases):
-ggu-connect create --json '<json-string>' --db-profile <profile>
+ggu-connect create drillings --input <xml-file> --db-profile <profile> [options]
 ```
 
-## JSON Input Structure
+## XML Input Structure
 
-### Create Boreholes/Drillings
+Uses the existing GGU-CONNECT XML format:
 
-```json
-{
-  "operation": "create_drillings",
-  "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "drillings": [
-    {
-      "name": "BH-001",
-      "type": "borehole",
-      "x": 357812.12,
-      "y": 5812341.44,
-      "z": 45.50,
-      "crs": "EPSG:25832",
-      "external_id": "EXT-001",
-      "date_begin": "2026-01-15",
-      "date_end": "2026-01-16",
-      "attributes": {
-        "contractor": "Drilling Co.",
-        "method": "rotary"
-      }
-    },
-    {
-      "name": "CPT-001",
-      "type": "cpt",
-      "x": 357815.00,
-      "y": 5812345.00,
-      "crs": "EPSG:25832"
-    }
-  ]
-}
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<ggu-connect version="1.0">
+  <project id="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+    <drillings>
+      <drilling name="BH-001"
+                location-id="new-guid-1"
+                x-coordinate="357812.12"
+                y-coordinate="5812341.44"
+                z-coordinate-begin="45.50"
+                coordinatesystem-epsg-code="25832">
+      </drilling>
+    </drillings>
+    <cone-penetrations>
+      <cone-penetration name="CPT-001"
+                        location-id="new-guid-2"
+                        x-coordinate="357815.00"
+                        y-coordinate="5812345.00"
+                        coordinatesystem-epsg-code="25832">
+      </cone-penetration>
+    </cone-penetrations>
+    <percussion-drillings>
+      <percussion-drilling name="DPT-001"
+                           location-id="new-guid-3"
+                           x-coordinate="357820.00"
+                           y-coordinate="5812350.00"
+                           coordinatesystem-epsg-code="25832">
+      </percussion-drilling>
+    </percussion-drillings>
+  </project>
+</ggu-connect>
 ```
 
-### Supported Drilling Types
+## Supported Drilling Types
 
-| Type | Description |
-|------|-------------|
-| `borehole` | Standard borehole (Bohrung) |
-| `cpt` | Cone Penetration Test (Drucksondierung) |
-| `dpt` | Dynamic Probing Test (Rammsondierung) |
-| `trial_pit` | Trial pit / test pit (Schürfgrube) |
-
-### Create Project (Optional)
-
-```json
-{
-  "operation": "create_project",
-  "project": {
-    "name": "New Project 2026",
-    "project_no": "P-2026-001",
-    "customer": "Customer Name",
-    "location": "Berlin",
-    "attributes": {
-      "phase": "exploration"
-    }
-  }
-}
-```
+| XML Element | Description |
+|-------------|-------------|
+| `<drilling>` | Standard borehole (Bohrung) |
+| `<cone-penetration>` | Cone Penetration Test / CPT (Drucksondierung) |
+| `<percussion-drilling>` | Dynamic Probing Test / DPT (Rammsondierung) |
 
 ## CLI Options
 
 ```
 OPTIONS:
-  -i, --input <file>     Input JSON file path (required unless --json used)
-  -j, --json <string>    Inline JSON string (alternative to --input)
+  -i, --input <file>     Input XML file path (required)
   -p, --db-profile       Database profile name
       --db <conn>        Direct database connection string
       --dry-run          Validate and preview without creating
-  -f, --output-format    Output format: json (default), text
-      --return-ids       Return created entity IDs in output
+      --project <guid>   Target project GUID (overrides XML)
 ```
 
-## Output
+## Implementation
 
-### Success Response (JSON)
-
-```json
-{
-  "success": true,
-  "created": {
-    "drillings": [
-      {
-        "name": "BH-001",
-        "location_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-        "status": "created"
-      },
-      {
-        "name": "CPT-001",
-        "location_id": "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy",
-        "status": "created"
-      }
-    ]
-  },
-  "summary": {
-    "total": 2,
-    "created": 2,
-    "skipped": 0,
-    "errors": 0
-  }
-}
-```
-
-### Error Response
-
-```json
-{
-  "success": false,
-  "errors": [
-    {
-      "index": 0,
-      "name": "BH-001",
-      "error": "Duplicate name in project"
-    }
-  ]
-}
-```
-
-## Implementation Notes
-
-### Delphi Unit Structure
+Reuses existing infrastructure:
 
 ```
-GGU.Apps.ConnectCLI/
-├── Commands/
-│   ├── CreateCommand.pas        # Main create command handler
-│   ├── CreateDrillingsHandler.pas  # Drilling creation logic
-│   └── CreateProjectHandler.pas    # Project creation logic
-└── Models/
-    └── CreateInputModels.pas    # JSON deserialization models
+XML File → IConnectXMLImporter.importProjectsFromXmlFile()
+                    ↓
+              IList<IProject>
+                    ↓
+         TMergeHelper.Create(dbContext, projects, false)
+                    ↓
+         TMergeHelper.DryRun() → Conflict detection
+                    ↓
+         TMergeHelper.doMerge() → SQL INSERT statements
 ```
 
-### Key Classes
+### Key Components (all existing)
 
-```pascal
-type
-  TCreateDrillingInput = class
-  private
-    FName: string;
-    FType: string;  // 'borehole', 'cpt', 'dpt', 'trial_pit'
-    FX: Double;
-    FY: Double;
-    FZ: Double;
-    FCRS: string;
-    FExternalID: string;
-    FDateBegin: TDateTime;
-    FDateEnd: TDateTime;
-  public
-    property Name: string read FName write FName;
-    property DrillingType: string read FType write FType;
-    property X: Double read FX write FX;
-    property Y: Double read FY write FY;
-    property Z: Double read FZ write FZ;
-    property CRS: string read FCRS write FCRS;
-    property ExternalID: string read FExternalID write FExternalID;
-    property DateBegin: TDateTime read FDateBegin write FDateBegin;
-    property DateEnd: TDateTime read FDateEnd write FDateEnd;
-  end;
+| Component | Location |
+|-----------|----------|
+| `IConnectXMLImporter` | `GGU.Libs.Connect.XML.pas` |
+| `IConnectModelFactory` | `GGU.Libs.Connect.Model.Intf.pas` |
+| `TMergeHelper` | `GGU.Libs.Connect.Impl.Merge.pas` |
 
-  TCreateDrillingsOperation = class
-  private
-    FProjectID: TGUID;
-    FDrillings: TObjectList<TCreateDrillingInput>;
-  public
-    property ProjectID: TGUID read FProjectID write FProjectID;
-    property Drillings: TObjectList<TCreateDrillingInput> read FDrillings;
-  end;
+### New CLI Command Handler
+
 ```
-
-### Coordinate Transformation
-
-The command should handle CRS transformation internally:
-1. Parse input CRS (e.g., "EPSG:25832")
-2. Store coordinates in database native format
-3. Use existing `TCoordinateTransformer` if available
-
-### Validation Rules
-
-1. **Required fields**: name, x, y, crs
-2. **Unique constraint**: name must be unique within project
-3. **CRS validation**: must be valid EPSG code
-4. **Type validation**: must be known drilling type
+apps-desktop/ggu-connect-cli/
+└── src/Commands/
+    └── GGU.Apps.ConnectCLI.Commands.Create.pas  # New CLI command
+```
 
 ## QGIS Plugin Integration
 
-The QGIS plugin would create JSON like:
+The QGIS plugin creates XML and calls the CLI:
 
 ```python
-def _create_drilling(self, drilling_type):
-    # ... collect points from selection ...
-
-    json_data = {
-        "operation": "create_drillings",
-        "project_id": project_id,
-        "drillings": [
-            {
-                "name": p["name"],
-                "type": drilling_type,
-                "x": p["x"],
-                "y": p["y"],
-                "crs": crs,
-            }
-            for p in points
-        ]
-    }
+def create_drillings(self, points, drilling_type, project_id, db_profile):
+    # Build XML
+    xml_content = self._build_drilling_xml(points, drilling_type, project_id)
 
     # Write to temp file
-    with open(temp_file, 'w') as f:
-        json.dump(json_data, f)
+    with open(temp_file, 'w', encoding='utf-8') as f:
+        f.write(xml_content)
 
     # Call CLI
-    subprocess.run([cli_path, "create", "--input", temp_file, "--db-profile", profile])
-```
-
-## Future Extensions
-
-The JSON structure supports future operations:
-
-```json
-{"operation": "create_soil_layers", ...}
-{"operation": "create_samples", ...}
-{"operation": "create_groundwater_levels", ...}
-{"operation": "update_drillings", ...}
+    result = subprocess.run([
+        cli_path, "create", "drillings",
+        "--input", temp_file,
+        "--db-profile", db_profile
+    ])
 ```
 
 ## Example Usage
 
 ```bash
-# Create from file
-ggu-connect create --input new-boreholes.json --db-profile production
+# Create drillings from XML file
+ggu-connect create drillings --input new-boreholes.xml --db-profile production
 
 # Dry run to validate
-ggu-connect create --input new-boreholes.json --db-profile production --dry-run
-
-# Inline JSON for single borehole
-ggu-connect create --db-profile production --json '{
-  "operation": "create_drillings",
-  "project_id": "...",
-  "drillings": [{"name": "BH-TEST", "type": "borehole", "x": 357812, "y": 5812341, "crs": "EPSG:25832"}]
-}'
+ggu-connect create drillings --input new-boreholes.xml --db-profile production --dry-run
 ```
+
+## Benefits
+
+1. **No new format** - Reuses existing XML schema
+2. **Proven infrastructure** - Battle-tested merge logic
+3. **Transaction support** - Atomic operations with rollback
+4. **Full entity support** - Can create any entity type supported by XML

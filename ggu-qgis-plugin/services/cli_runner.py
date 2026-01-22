@@ -11,11 +11,12 @@ All business logic remains in the CLI - this service only handles:
 """
 
 import csv
-import json
 import os
 import subprocess
 import tempfile
+import uuid
 from typing import List, Dict, Tuple, Optional
+from xml.etree import ElementTree as ET
 
 from qgis.PyQt.QtCore import QSettings
 
@@ -124,12 +125,12 @@ class CliRunner:
     ) -> Tuple[bool, str]:
         """Create new drillings (boreholes or soundings) from points.
 
-        Tries the new JSON-based 'create' command first, falls back to
+        Tries the XML-based 'create drillings' command first, falls back to
         'import coordinates' if not available.
 
         Args:
             points: List of dicts with keys: name, x, y, crs, z (optional)
-            drilling_type: Type of drilling ('borehole' or 'cpt')
+            drilling_type: Type of drilling ('borehole', 'cpt', or 'dpt')
             project_id: Target project GUID
             db_profile: Database profile name (optional)
 
@@ -142,8 +143,8 @@ class CliRunner:
         if not project_id:
             return False, "Project ID is required"
 
-        # Try the new JSON-based create command first
-        success, message = self._create_drillings_json(points, drilling_type, project_id, db_profile)
+        # Try the XML-based create command first
+        success, message = self._create_drillings_xml(points, drilling_type, project_id, db_profile)
 
         if success:
             return success, message
@@ -154,58 +155,37 @@ class CliRunner:
 
         return success, message
 
-    def _create_drillings_json(
+    def _create_drillings_xml(
         self,
         points: List[Dict],
         drilling_type: str,
         project_id: str,
         db_profile: Optional[str] = None,
     ) -> Tuple[bool, str]:
-        """Create drillings using JSON-based 'create' command.
+        """Create drillings using XML-based 'create drillings' command.
 
         Uses the CLI command:
-        ggu-connect create --input <json-file> --db-profile <profile>
+        ggu-connect create drillings --input <xml-file> --db-profile <profile>
 
         Args:
             points: List of dicts with keys: name, x, y, crs, z (optional)
-            drilling_type: Type of drilling ('borehole' or 'cpt')
+            drilling_type: Type of drilling ('borehole', 'cpt', or 'dpt')
             project_id: Target project GUID
             db_profile: Database profile name (optional)
 
         Returns:
             Tuple of (success: bool, message: str)
         """
-        # Build JSON structure
-        crs = points[0].get("crs", "EPSG:25832") if points else "EPSG:25832"
+        # Build XML content
+        xml_content = self._build_drilling_xml(points, drilling_type, project_id)
 
-        json_data = {
-            "operation": "create_drillings",
-            "project_id": project_id,
-            "drillings": [
-                {
-                    "name": p.get("name", f"NEW-{i+1}"),
-                    "type": drilling_type,
-                    "x": p["x"],
-                    "y": p["y"],
-                    "z": p.get("z"),
-                    "crs": p.get("crs", crs),
-                }
-                for i, p in enumerate(points)
-            ]
-        }
-
-        # Remove None values from drillings
-        for drilling in json_data["drillings"]:
-            if drilling["z"] is None:
-                del drilling["z"]
-
-        # Create temp JSON file
-        json_path = self._create_json_file(json_data)
-        if not json_path:
-            return False, "Failed to create temporary JSON file"
+        # Create temp XML file
+        xml_path = self._create_xml_file(xml_content)
+        if not xml_path:
+            return False, "Failed to create temporary XML file"
 
         try:
-            args = ["create", "--input", json_path]
+            args = ["create", "drillings", "--input", xml_path]
 
             if db_profile:
                 args.extend(["--db-profile", db_profile])
@@ -214,9 +194,72 @@ class CliRunner:
 
         finally:
             try:
-                os.remove(json_path)
+                os.remove(xml_path)
             except OSError:
                 pass
+
+    def _build_drilling_xml(
+        self,
+        points: List[Dict],
+        drilling_type: str,
+        project_id: str,
+    ) -> str:
+        """Build XML content for drilling creation.
+
+        Args:
+            points: List of dicts with keys: name, x, y, crs, z (optional)
+            drilling_type: Type of drilling ('borehole', 'cpt', or 'dpt')
+            project_id: Target project GUID
+
+        Returns:
+            XML string in GGU-CONNECT format
+        """
+        # Get EPSG code from first point
+        crs = points[0].get("crs", "EPSG:25832") if points else "EPSG:25832"
+        epsg_code = crs.replace("EPSG:", "") if crs.startswith("EPSG:") else "25832"
+
+        # Create root element
+        root = ET.Element("ggu-connect", version="1.0")
+
+        # Create project element
+        project = ET.SubElement(root, "project", id=project_id)
+
+        # Map drilling type to XML element name and container
+        type_mapping = {
+            "borehole": ("drillings", "drilling"),
+            "cpt": ("cone-penetrations", "cone-penetration"),
+            "dpt": ("percussion-drillings", "percussion-drilling"),
+        }
+
+        container_name, element_name = type_mapping.get(drilling_type, ("drillings", "drilling"))
+
+        # Create container element
+        container = ET.SubElement(project, container_name)
+
+        # Add each drilling
+        for point in points:
+            # Generate a new GUID for location-id
+            location_id = str(uuid.uuid4())
+
+            drilling_attrs = {
+                "name": point.get("name", "NEW"),
+                "location-id": location_id,
+                "x-coordinate": str(point["x"]),
+                "y-coordinate": str(point["y"]),
+                "coordinatesystem-epsg-code": epsg_code,
+            }
+
+            # Add z-coordinate if present
+            if point.get("z") is not None:
+                drilling_attrs["z-coordinate-begin"] = str(point["z"])
+
+            ET.SubElement(container, element_name, **drilling_attrs)
+
+        # Convert to string with XML declaration
+        xml_str = '<?xml version="1.0" encoding="utf-8"?>\n'
+        xml_str += ET.tostring(root, encoding="unicode")
+
+        return xml_str
 
     def _create_drillings_csv_fallback(
         self,
@@ -322,22 +365,22 @@ class CliRunner:
         except Exception:
             return None
 
-    def _create_json_file(self, data: Dict) -> Optional[str]:
-        """Create a temporary JSON file with data.
+    def _create_xml_file(self, xml_content: str) -> Optional[str]:
+        """Create a temporary XML file with content.
 
         Args:
-            data: Dictionary to serialize as JSON
+            xml_content: XML string to write
 
         Returns:
-            Path to the created JSON file, or None on error
+            Path to the created XML file, or None on error
         """
         try:
-            fd, json_path = tempfile.mkstemp(suffix=".json", prefix="ggu_create_")
+            fd, xml_path = tempfile.mkstemp(suffix=".xml", prefix="ggu_create_")
 
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+                f.write(xml_content)
 
-            return json_path
+            return xml_path
 
         except Exception:
             return None
