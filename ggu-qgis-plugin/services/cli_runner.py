@@ -11,6 +11,8 @@ All business logic remains in the CLI - this service only handles:
 """
 
 import csv
+import datetime
+import logging
 import os
 import subprocess
 import tempfile
@@ -19,6 +21,17 @@ from typing import List, Dict, Tuple, Optional
 from xml.etree import ElementTree as ET
 
 from qgis.PyQt.QtCore import QSettings
+
+# Set up logging to file
+LOG_FILE = os.path.join(tempfile.gettempdir(), "ggu-qgis-plugin.log")
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+    ]
+)
+logger = logging.getLogger("ggu_qgis_cli")
 
 
 class CliRunner:
@@ -43,12 +56,21 @@ class CliRunner:
         """
         cli_path = self._get_cli_path()
         if not cli_path:
+            logger.error("CLI path not configured")
             return False, "CLI path not configured"
 
         if not os.path.exists(cli_path):
+            logger.error(f"CLI executable not found: {cli_path}")
             return False, f"CLI executable not found: {cli_path}"
 
         full_command = [cli_path] + args
+
+        # Log the full command for debugging
+        logger.info("=" * 80)
+        logger.info(f"Executing CLI command:")
+        logger.info(f"  CLI Path: {cli_path}")
+        logger.info(f"  Arguments: {' '.join(args)}")
+        logger.info(f"  Full command: {' '.join(full_command)}")
 
         try:
             result = subprocess.run(
@@ -58,18 +80,51 @@ class CliRunner:
                 timeout=300,  # 5 minute timeout
             )
 
+            logger.info(f"  Return code: {result.returncode}")
+            logger.info(f"  STDOUT length: {len(result.stdout) if result.stdout else 0}")
+            logger.info(f"  STDERR length: {len(result.stderr) if result.stderr else 0}")
+
+            if result.stdout:
+                # Log first 2000 chars of stdout
+                logger.debug(f"  STDOUT (first 2000 chars): {result.stdout[:2000]}")
+            if result.stderr:
+                logger.warning(f"  STDERR: {result.stderr}")
+
             if result.returncode == 0:
+                logger.info("  Command completed successfully")
                 return True, result.stdout
             else:
                 error_msg = result.stderr or result.stdout or f"Exit code: {result.returncode}"
+                logger.error(f"  Command failed: {error_msg}")
                 return False, error_msg
 
         except subprocess.TimeoutExpired:
+            logger.error("  Command timed out after 5 minutes")
             return False, "Command timed out after 5 minutes"
         except FileNotFoundError:
+            logger.error(f"  CLI executable not found: {cli_path}")
             return False, f"CLI executable not found: {cli_path}"
         except Exception as e:
+            logger.exception(f"  Error running CLI: {str(e)}")
             return False, f"Error running CLI: {str(e)}"
+
+    def _format_guid(self, value: str) -> str:
+        """Ensure GUID is properly formatted with curly braces.
+
+        Args:
+            value: GUID string, with or without braces
+
+        Returns:
+            GUID string with curly braces: {XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}
+        """
+        if not value:
+            return value
+        value = str(value).strip()
+        if not value.startswith("{"):
+            value = "{" + value
+        if not value.endswith("}"):
+            value = value + "}"
+        return value
 
     def open_in_stratig(
         self,
@@ -92,29 +147,68 @@ class CliRunner:
         Returns:
             Tuple of (success: bool, message: str)
         """
+        logger.info("=" * 80)
+        logger.info("open_in_stratig called")
+        logger.info(f"  Input location_ids: {location_ids}")
+        logger.info(f"  Input project_id: {project_id}")
+        logger.info(f"  Input db_profile: {db_profile}")
+
         if not location_ids:
+            logger.error("  No boreholes specified")
             return False, "No boreholes specified"
 
         if not project_id:
+            logger.error("  Project ID is required")
             return False, "Project ID is required"
+
+        # Ensure GUIDs are properly formatted with curly braces
+        formatted_ids = [self._format_guid(lid) for lid in location_ids]
+        formatted_project_id = self._format_guid(project_id)
+
+        logger.info(f"  Formatted drilling IDs: {formatted_ids}")
+        logger.info(f"  Formatted project ID: {formatted_project_id}")
 
         # Create temp directory for output (required by CLI even in open mode)
         temp_dir = tempfile.mkdtemp(prefix="ggu_qgis_")
+        logger.info(f"  Temp output directory: {temp_dir}")
 
         # Build command arguments
         args = [
             "export", "ggu-app",
             "--app", "stratig",
             "--mode", "open",
-            "--project", project_id,
-            "--filter-drilling-ids", ",".join(location_ids),
+            "--project", formatted_project_id,
+            "--filter-drilling-ids", ",".join(formatted_ids),
             "--output", temp_dir,
         ]
 
         if db_profile:
             args.extend(["--db-profile", db_profile])
 
-        return self._run_command(args)
+        # Log the XML export path that CLI will use
+        xml_path = os.path.join(os.environ.get('LOCALAPPDATA', tempfile.gettempdir()),
+                               'Temp', 'CONNECT-GGU-STRATIG-EXPORT.XML')
+        logger.info(f"  Expected XML export path: {xml_path}")
+
+        result = self._run_command(args)
+
+        # After command, check if XML was created and log its content summary
+        if os.path.exists(xml_path):
+            try:
+                with open(xml_path, 'r', encoding='utf-8') as f:
+                    xml_content = f.read()
+                logger.info(f"  XML file exists, size: {len(xml_content)} bytes")
+                # Count soil-layer elements
+                soil_layer_count = xml_content.count('<soil-layer ')
+                logger.info(f"  Number of <soil-layer> elements in XML: {soil_layer_count}")
+                # Log first 3000 chars of XML for inspection
+                logger.debug(f"  XML content (first 3000 chars):\n{xml_content[:3000]}")
+            except Exception as e:
+                logger.warning(f"  Could not read XML file: {e}")
+        else:
+            logger.warning(f"  XML file not found at: {xml_path}")
+
+        return result
 
     def create_drillings(
         self,
@@ -391,7 +485,7 @@ class CliRunner:
         Returns:
             Tuple of (success: bool, profiles: List[str])
         """
-        success, output = self._run_command(["config", "profile", "list", "-f", "json"])
+        success, output = self._run_command(["config", "profile-list", "-f", "json"])
 
         if not success:
             return False, []
@@ -399,7 +493,60 @@ class CliRunner:
         try:
             import json
             data = json.loads(output)
-            profiles = [p.get("name", "") for p in data if p.get("name")]
-            return True, profiles
+
+            # Handle CLI response format: {success, data: {profiles: [...]}}
+            profiles = []
+            if isinstance(data, list):
+                profiles = data
+            elif isinstance(data, dict):
+                # Check for nested data.profiles (CLI format)
+                if "data" in data and isinstance(data["data"], dict):
+                    profiles = data["data"].get("profiles", [])
+                # Also handle direct profiles key
+                elif "profiles" in data:
+                    profiles = data["profiles"]
+
+            names = [p.get("name", "") for p in profiles if p.get("name")]
+            return True, names
+        except (json.JSONDecodeError, KeyError):
+            return False, []
+
+    def get_projects(
+        self,
+        db_profile: Optional[str] = None,
+    ) -> Tuple[bool, List[Dict]]:
+        """Get list of projects from the database.
+
+        Args:
+            db_profile: Database profile name (uses default from settings if not provided)
+
+        Returns:
+            Tuple of (success: bool, projects: List[Dict])
+            Each project dict contains: id, name, projectNo, customer, status
+        """
+        args = ["search", "projects", "-f", "json"]
+
+        if db_profile:
+            args.extend(["--db-profile", db_profile])
+        else:
+            # Use profile from settings
+            profile = self.settings.value("ggu_qgis_tools/db_profile", "")
+            if profile:
+                args.extend(["--db-profile", profile])
+
+        success, output = self._run_command(args)
+
+        if not success:
+            return False, []
+
+        try:
+            import json
+            data = json.loads(output)
+            # Handle CLI response format: {success, data: {projects: [...]}}
+            if isinstance(data, dict) and "data" in data:
+                projects = data["data"].get("projects", [])
+            else:
+                projects = data.get("projects", [])
+            return True, projects
         except (json.JSONDecodeError, KeyError):
             return False, []

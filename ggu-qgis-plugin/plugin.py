@@ -83,7 +83,7 @@ class GguQgisToolsPlugin:
 
         # Action: Open in GGU-STRATIG
         self.add_action(
-            os.path.join(icon_base, "icon_open.svg"),
+            os.path.join(icon_base, "icon_stratig.png"),
             self.tr("Open in GGU-STRATIG"),
             self.open_in_stratig,
             status_tip=self.tr("Open selected boreholes in GGU-STRATIG"),
