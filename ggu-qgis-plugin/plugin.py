@@ -170,21 +170,14 @@ class GguQgisToolsPlugin:
             )
             return
 
-        if not project_id:
-            QMessageBox.warning(
-                self.iface.mainWindow(),
-                self.tr("Missing Attribute"),
-                self.tr("Selected features do not have 'ProjectID' attribute."),
-            )
-            return
-
         # Run CLI command
+        # Note: project_id is no longer required - the CLI auto-resolves it
+        # from the drilling IDs to avoid project/drilling mismatch bugs
         settings = QSettings()
         db_profile = settings.value("ggu_qgis_tools/db_profile", "")
 
         success, message = self.cli_runner.open_in_stratig(
             location_ids=location_ids,
-            project_id=project_id,
             db_profile=db_profile,
         )
 

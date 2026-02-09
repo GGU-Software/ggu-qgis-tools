@@ -129,19 +129,22 @@ class CliRunner:
     def open_in_stratig(
         self,
         location_ids: List[str],
-        project_id: str,
+        project_id: Optional[str] = None,
         db_profile: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Open boreholes in GGU-STRATIG.
 
         Uses the CLI command:
         ggu-connect export ggu-app --app stratig --mode open
-            --project <project_id> --filter-drilling-ids <ids>
+            --filter-drilling-ids <ids>
             --db-profile <profile> --output <temp_dir>
+
+        The CLI auto-resolves the project from the first drilling ID,
+        so --project is no longer passed to avoid mismatch risks.
 
         Args:
             location_ids: List of borehole LocationID GUIDs
-            project_id: Project GUID
+            project_id: Project GUID (unused, kept for backward compatibility)
             db_profile: Database profile name (optional)
 
         Returns:
@@ -150,34 +153,28 @@ class CliRunner:
         logger.info("=" * 80)
         logger.info("open_in_stratig called")
         logger.info(f"  Input location_ids: {location_ids}")
-        logger.info(f"  Input project_id: {project_id}")
+        logger.info(f"  Input project_id: {project_id} (not passed to CLI, auto-resolved)")
         logger.info(f"  Input db_profile: {db_profile}")
 
         if not location_ids:
             logger.error("  No boreholes specified")
             return False, "No boreholes specified"
 
-        if not project_id:
-            logger.error("  Project ID is required")
-            return False, "Project ID is required"
-
         # Ensure GUIDs are properly formatted with curly braces
         formatted_ids = [self._format_guid(lid) for lid in location_ids]
-        formatted_project_id = self._format_guid(project_id)
 
         logger.info(f"  Formatted drilling IDs: {formatted_ids}")
-        logger.info(f"  Formatted project ID: {formatted_project_id}")
 
         # Create temp directory for output (required by CLI even in open mode)
         temp_dir = tempfile.mkdtemp(prefix="ggu_qgis_")
         logger.info(f"  Temp output directory: {temp_dir}")
 
         # Build command arguments
+        # Note: --project is omitted; the CLI auto-resolves it from the first drilling ID
         args = [
             "export", "ggu-app",
             "--app", "stratig",
             "--mode", "open",
-            "--project", formatted_project_id,
             "--filter-drilling-ids", ",".join(formatted_ids),
             "--output", temp_dir,
         ]

@@ -73,17 +73,20 @@ class TestCliRunner(unittest.TestCase):
 
     @patch("subprocess.run")
     def test_open_in_stratig_builds_correct_command(self, mock_run):
-        """Test that open_in_stratig builds correct CLI arguments."""
+        """Test that open_in_stratig builds correct CLI arguments.
+
+        The CLI auto-resolves the project from drilling IDs,
+        so --project should NOT be passed.
+        """
         # Configure mock
         mock_run.return_value = MagicMock(returncode=0, stdout="OK", stderr="")
         self.mock_settings.value.side_effect = lambda key, default="": {
             "ggu_qgis_tools/cli_path": "/path/to/cli.exe",
         }.get(key, default)
 
-        # Call method
+        # Call method - project_id is optional, not passed to CLI
         success, msg = self.runner.open_in_stratig(
             location_ids=["guid-1", "guid-2"],
-            project_id="project-guid",
             db_profile="test-profile",
         )
 
@@ -101,6 +104,8 @@ class TestCliRunner(unittest.TestCase):
         self.assertIn("guid-1,guid-2", call_args)
         self.assertIn("--db-profile", call_args)
         self.assertIn("test-profile", call_args)
+        # --project should NOT be in the args (auto-resolved by CLI)
+        self.assertNotIn("--project", call_args)
 
 
 class TestCliRunnerIntegration(unittest.TestCase):
